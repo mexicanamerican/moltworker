@@ -4,9 +4,9 @@ import { createAccessMiddleware } from '../auth';
 import {
   ensureMoltbotGateway,
   findExistingMoltbotProcess,
-  syncToR2,
   waitForProcess,
 } from '../gateway';
+import { createSnapshot, getCachedHandle } from '../persistence';
 
 // CLI commands can take 10-15 seconds to complete due to WebSocket connection overhead
 const CLI_TIMEOUT_MS = 20000;
@@ -194,63 +194,49 @@ adminApi.post('/devices/approve-all', async (c) => {
   }
 });
 
-// GET /api/admin/storage - Get R2 storage status and last sync time
+// GET /api/admin/storage - Get backup/restore status
 adminApi.get('/storage', async (c) => {
-  const sandbox = c.get('sandbox');
   const hasCredentials = !!(
     c.env.R2_ACCESS_KEY_ID &&
     c.env.R2_SECRET_ACCESS_KEY &&
-    c.env.CF_ACCOUNT_ID
+    c.env.CLOUDFLARE_ACCOUNT_ID
   );
 
   const missing: string[] = [];
   if (!c.env.R2_ACCESS_KEY_ID) missing.push('R2_ACCESS_KEY_ID');
   if (!c.env.R2_SECRET_ACCESS_KEY) missing.push('R2_SECRET_ACCESS_KEY');
-  if (!c.env.CF_ACCOUNT_ID) missing.push('CF_ACCOUNT_ID');
+  if (!c.env.CLOUDFLARE_ACCOUNT_ID) missing.push('CLOUDFLARE_ACCOUNT_ID');
 
-  let lastSync: string | null = null;
-
-  if (hasCredentials) {
-    try {
-      const result = await sandbox.exec('cat /tmp/.last-sync 2>/dev/null || echo ""');
-      const timestamp = result.stdout?.trim();
-      if (timestamp && timestamp !== '') {
-        lastSync = timestamp;
-      }
-    } catch {
-      // Ignore errors checking sync status
-    }
-  }
+  const handle = getCachedHandle();
 
   return c.json({
     configured: hasCredentials,
     missing: missing.length > 0 ? missing : undefined,
-    lastSync,
+    lastBackupId: handle?.id ?? null,
     message: hasCredentials
-      ? 'R2 storage is configured. Your data will persist across container restarts.'
+      ? 'R2 storage is configured. Your data will persist across container restarts via SDK snapshots.'
       : 'R2 storage is not configured. Paired devices and conversations will be lost when the container restarts.',
   });
 });
 
-// POST /api/admin/storage/sync - Trigger a manual sync to R2
+// POST /api/admin/storage/sync - Create a new snapshot
 adminApi.post('/storage/sync', async (c) => {
   const sandbox = c.get('sandbox');
 
-  const result = await syncToR2(sandbox, c.env);
-
-  if (result.success) {
+  try {
+    const handle = await createSnapshot(sandbox);
     return c.json({
       success: true,
-      message: 'Sync completed successfully',
-      lastSync: result.lastSync,
+      message: 'Snapshot created successfully',
+      backupId: handle.id,
     });
-  } else {
-    const status = result.error?.includes('not configured') ? 400 : 500;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const status = errorMessage.includes('not configured') || errorMessage.includes('Missing') ? 400 : 500;
     return c.json(
       {
         success: false,
-        error: result.error,
-        details: result.details,
+        error: errorMessage,
       },
       status,
     );

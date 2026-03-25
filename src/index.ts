@@ -29,6 +29,7 @@ import { createAccessMiddleware } from './auth';
 import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
+import { restoreIfNeeded, createSnapshot } from './persistence';
 import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
 
@@ -132,11 +133,20 @@ app.use('*', async (c, next) => {
   await next();
 });
 
-// Middleware: Initialize sandbox for all requests
+// Middleware: Initialize sandbox and restore backup if available
 app.use('*', async (c, next) => {
   const options = buildSandboxOptions(c.env);
   const sandbox = getSandbox(c.env.Sandbox, 'moltbot', options);
   c.set('sandbox', sandbox);
+
+  // Restore from backup on first access (idempotent, once per Worker isolate)
+  try {
+    await restoreIfNeeded(sandbox);
+  } catch (err) {
+    console.error('[middleware] Backup restore failed:', err);
+    // Continue anyway — fresh container is better than no container
+  }
+
   await next();
 });
 
@@ -258,6 +268,20 @@ app.all('*', async (c) => {
   // Ensure moltbot is running (this will wait for startup)
   try {
     await ensureMoltbotGateway(sandbox, c.env);
+
+    // Schedule a snapshot after gateway startup settles (non-blocking).
+    // This captures the initial config/workspace state for persistence.
+    c.executionCtx.waitUntil(
+      (async () => {
+        // Wait 30s for the gateway to write initial state
+        await new Promise((r) => setTimeout(r, 30_000));
+        try {
+          await createSnapshot(sandbox);
+        } catch (err) {
+          console.error('[snapshot] Post-startup snapshot failed:', err);
+        }
+      })(),
+    );
   } catch (error) {
     console.error('[PROXY] Failed to start Moltbot:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
