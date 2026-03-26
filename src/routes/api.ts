@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { createAccessMiddleware } from '../auth';
-import { ensureMoltbotGateway, findExistingMoltbotProcess, waitForProcess } from '../gateway';
+import { ensureGateway, findExistingGatewayProcess, waitForProcess } from '../gateway';
 import { createSnapshot, getLastBackupId, clearPersistenceCache } from '../persistence';
 
 // CLI commands can take 10-15 seconds to complete due to WebSocket connection overhead
@@ -28,8 +28,8 @@ adminApi.get('/devices', async (c) => {
   const sandbox = c.get('sandbox');
 
   try {
-    // Ensure moltbot is running first
-    await ensureMoltbotGateway(sandbox, c.env);
+    // Ensure gateway is running first
+    await ensureGateway(sandbox, c.env);
 
     // Run OpenClaw CLI to list devices
     // Must specify --url and --token (OpenClaw v2026.2.3 requires explicit credentials with --url)
@@ -85,8 +85,8 @@ adminApi.post('/devices/:requestId/approve', async (c) => {
   }
 
   try {
-    // Ensure moltbot is running first
-    await ensureMoltbotGateway(sandbox, c.env);
+    // Ensure gateway is running first
+    await ensureGateway(sandbox, c.env);
 
     // Run OpenClaw CLI to approve the device
     const token = c.env.MOLTBOT_GATEWAY_TOKEN;
@@ -121,8 +121,8 @@ adminApi.post('/devices/approve-all', async (c) => {
   const sandbox = c.get('sandbox');
 
   try {
-    // Ensure moltbot is running first
-    await ensureMoltbotGateway(sandbox, c.env);
+    // Ensure gateway is running first
+    await ensureGateway(sandbox, c.env);
 
     // First, get the list of pending devices
     const token = c.env.MOLTBOT_GATEWAY_TOKEN;
@@ -246,7 +246,7 @@ adminApi.post('/gateway/restart', async (c) => {
 
   try {
     // Find and kill the existing gateway process
-    const existingProcess = await findExistingMoltbotProcess(sandbox);
+    const existingProcess = await findExistingGatewayProcess(sandbox);
 
     if (existingProcess) {
       console.log('Killing existing gateway process:', existingProcess.id);
@@ -262,7 +262,7 @@ adminApi.post('/gateway/restart', async (c) => {
     // Clear the restore flag so the next request re-restores from R2.
     // We intentionally do NOT start the gateway here — the next incoming
     // request will trigger restoreIfNeeded() first (in the middleware),
-    // then ensureMoltbotGateway() (in the catch-all route), ensuring
+    // then ensureGateway() (in the catch-all route), ensuring
     // the FUSE overlay is mounted before the gateway writes config files.
     clearPersistenceCache();
 

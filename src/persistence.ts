@@ -1,6 +1,6 @@
 import type { Sandbox } from '@cloudflare/sandbox';
 
-const BACKUP_DIR = '/home/moltbot';
+const BACKUP_DIR = '/home/openclaw';
 const HANDLE_KEY = 'backup-handle.json';
 
 // Tracks whether a restore has already happened in this Worker isolate lifetime.
@@ -62,14 +62,14 @@ export async function restoreIfNeeded(sandbox: Sandbox, bucket: R2Bucket): Promi
 }
 
 /**
- * Create a new snapshot of /home/moltbot (config + workspace + skills).
+ * Create a new snapshot of /home/openclaw (config + workspace + skills).
  *
  * Follows the delete-then-write pattern from the Cloudflare docs: the previous
  * backup's R2 objects are removed before creating a new one, and the handle is
  * persisted to R2 for cross-isolate access.
  *
  * The Sandbox SDK only allows backup of directories under /home, /workspace,
- * /tmp, or /var/tmp. The Dockerfile sets HOME=/home/moltbot and symlinks
+ * /tmp, or /var/tmp. The Dockerfile sets HOME=/home/openclaw and symlinks
  * /root/.openclaw and /root/clawd there.
  */
 export async function createSnapshot(

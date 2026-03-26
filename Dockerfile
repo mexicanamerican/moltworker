@@ -19,20 +19,20 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && node --version \
     && npm --version
 
-# Install OpenClaw (formerly clawdbot/moltbot)
+# Install OpenClaw
 # Pin to specific version for reproducible builds
 RUN npm install -g openclaw@2026.3.23-2 \
     && openclaw --version
 
-# Use /home/moltbot as the home directory instead of /root.
+# Use /home/openclaw as the home directory instead of /root.
 # The Sandbox SDK backup API only allows directories under /home, /workspace,
 # /tmp, or /var/tmp — not /root.
-ENV HOME=/home/moltbot
-RUN mkdir -p /home/moltbot/.openclaw \
-    && mkdir -p /home/moltbot/clawd \
-    && mkdir -p /home/moltbot/clawd/skills \
-    && ln -s /home/moltbot/.openclaw /root/.openclaw \
-    && ln -s /home/moltbot/clawd /root/clawd
+ENV HOME=/home/openclaw
+RUN mkdir -p /home/openclaw/.openclaw \
+    && mkdir -p /home/openclaw/clawd \
+    && mkdir -p /home/openclaw/clawd/skills \
+    && ln -s /home/openclaw/.openclaw /root/.openclaw \
+    && ln -s /home/openclaw/clawd /root/clawd
 
 # Copy startup script
 # Build cache bust: 2026-03-26-v32-home-dir
@@ -40,16 +40,16 @@ COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
 # Copy custom skills
-COPY skills/ /home/moltbot/clawd/skills/
+COPY skills/ /home/openclaw/clawd/skills/
 
 # Ensure all files are readable for mksquashfs (Sandbox SDK backup).
 # OpenClaw and other tools may create restrictive config files at runtime,
 # but we fix build-time permissions here; runtime permissions are fixed
-# before each backup via sandbox.exec("chmod -R a+rX /home/moltbot").
-RUN chmod -R a+rX /home/moltbot
+# before each backup via sandbox.exec("chmod -R a+rX /home/openclaw").
+RUN chmod -R a+rX /home/openclaw
 
 # Set working directory
-WORKDIR /home/moltbot/clawd
+WORKDIR /home/openclaw/clawd
 
 # Expose the gateway port
 EXPOSE 18789
