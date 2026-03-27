@@ -152,21 +152,7 @@ verify marker file restored from R2 after restart
 %require
 ===
 WORKER_URL=$(cat "$CCTR_FIXTURE_DIR/worker-url.txt")
-# Check what's on the filesystem and whether the overlay is mounted
-DIAG=$(./curl-auth -s "$WORKER_URL/debug/cli?cmd=ls+-la+/home/openclaw/clawd/+2>%261+%26%26+echo+---MOUNT---+%26%26+mount+%7C+grep+openclaw+2>%261+%7C%7C+echo+no-overlay-mount" 2>/dev/null || echo "")
-echo "=== DIAGNOSTICS ===" >&2
-echo "$DIAG" | jq -r '.stdout // "(no stdout)"' >&2
-echo "=== END DIAGNOSTICS ===" >&2
-# Now try reading the file
-for i in $(seq 1 12); do
-    RESPONSE=$(./curl-auth -s "$WORKER_URL/debug/cli?cmd=cat+/home/openclaw/clawd/e2e-marker.txt" 2>/dev/null || echo "")
-    if echo "$RESPONSE" | jq -r '.stdout // empty' 2>/dev/null | grep -q "e2e-persistence-test"; then
-        echo "$RESPONSE" | jq .
-        exit 0
-    fi
-    sleep 5
-done
-echo "$RESPONSE" | jq .
+./curl-auth -s "$WORKER_URL/debug/cli?cmd=cat+/home/openclaw/clawd/e2e-marker.txt" | jq .
 ---
 {{ result: json object }}
 ---
