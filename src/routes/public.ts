@@ -35,19 +35,28 @@ publicRoutes.get('/logo-small.png', (c) => {
 publicRoutes.get('/api/status', async (c) => {
   const sandbox = c.get('sandbox');
 
-  // Restore from backup before checking/starting the gateway
-  try {
-    await restoreIfNeeded(sandbox, c.env.BACKUP_BUCKET);
-  } catch (err) {
-    console.error('[api/status] Backup restore failed:', err);
-  }
-
   try {
     let process = await findExistingGatewayProcess(sandbox);
+    console.log('[api/status] existing process:', process?.id ?? 'none', process?.status ?? '');
     if (!process) {
+      // Restore from backup only when the gateway needs to start.
+      // Restoring while the gateway is running would mount a FUSE overlay
+      // that interferes with createBackup.
+      try {
+        await Promise.race([
+          restoreIfNeeded(sandbox, c.env.BACKUP_BUCKET),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Restore timeout')), 15_000),
+          ),
+        ]);
+      } catch (err) {
+        console.error('[api/status] Backup restore failed/timeout:', err);
+      }
+
       // No gateway process found — start it with a short timeout.
       // The loading page polls /api/status every few seconds, so even
       // if this attempt times out, subsequent polls will retry.
+      console.log('[api/status] No process found, starting gateway...');
       const QUICK_START_TIMEOUT = 30_000;
       try {
         await Promise.race([

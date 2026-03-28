@@ -26,7 +26,7 @@ import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, OpenClawEnv } from './types';
 import { GATEWAY_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureGateway, findExistingGatewayProcess } from './gateway';
+import { ensureGateway, findExistingGatewayProcess, killGateway } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import { restoreIfNeeded, createSnapshot } from './persistence';
@@ -47,6 +47,18 @@ function transformErrorMessage(message: string, host: string): string {
 
   return message;
 }
+
+/**
+ * Check if an error indicates the gateway process has crashed.
+ * The Sandbox SDK throws this when containerFetch/wsConnect is called
+ * but the target process is no longer listening.
+ */
+function isGatewayCrashedError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message.includes('is not listening');
+}
+
+// killGateway is imported from './gateway' (shared with restart handler)
 
 export { Sandbox };
 
@@ -133,7 +145,12 @@ app.use('*', async (c, next) => {
   await next();
 });
 
-// Middleware: Initialize sandbox and restore backup if available
+// Middleware: Initialize sandbox stub and restore backup if available.
+// Note: we intentionally do NOT call sandbox.start() here. The Sandbox SDK's
+// containerFetch() auto-starts the container when needed, and the catch-all
+// proxy route uses ensureGateway() which handles startup explicitly.
+// Adding start() here would add an unnecessary RPC call on every request,
+// including static assets and health checks that don't need the container.
 app.use('*', async (c, next) => {
   const options = buildSandboxOptions(c.env);
   const sandbox = getSandbox(c.env.Sandbox, 'openclaw', options);
@@ -241,19 +258,32 @@ app.all('*', async (c) => {
 
   console.log('[PROXY] Handling request:', url.pathname);
 
-  // Restore from backup before starting the gateway.
-  // This is only called here (catch-all) and from /api/status — NOT from admin
-  // routes like sync or debug/cli, because the SDK resets the FUSE overlay on
-  // createBackup, wiping upper-layer writes.
+  // Check if gateway is already running (with timeout to avoid hanging on cold start)
+  let existingProcess = null;
   try {
-    await restoreIfNeeded(sandbox, c.env.BACKUP_BUCKET);
-  } catch (err) {
-    console.error('[PROXY] Backup restore failed:', err);
+    existingProcess = await Promise.race([
+      findExistingGatewayProcess(sandbox),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
+    ]);
+  } catch {
+    // Treat as not running
   }
-
-  // Check if gateway is already running
-  const existingProcess = await findExistingGatewayProcess(sandbox);
   const isGatewayReady = existingProcess !== null && existingProcess.status === 'running';
+
+  // Only restore from backup when the gateway needs to start.
+  // Restoring on every request (including WebSocket reconnects) would mount a
+  // FUSE overlay that interferes with createBackup — the SDK resets the overlay
+  // on backup, wiping upper-layer writes.
+  if (!isGatewayReady) {
+    try {
+      await Promise.race([
+        restoreIfNeeded(sandbox, c.env.BACKUP_BUCKET),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Restore timeout')), 15_000)),
+      ]);
+    } catch (err) {
+      console.error('[PROXY] Backup restore failed/timeout:', err);
+    }
+  }
 
   // For browser requests (non-WebSocket, non-API), show loading page if gateway isn't ready
   const isWebSocketRequest = request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
@@ -317,8 +347,26 @@ app.all('*', async (c) => {
       wsRequest = new Request(tokenUrl.toString(), request);
     }
 
-    // Get WebSocket connection to the container
-    const containerResponse = await sandbox.wsConnect(wsRequest, GATEWAY_PORT);
+    // Get WebSocket connection to the container (with retry on crash)
+    let containerResponse: Response;
+    try {
+      containerResponse = await sandbox.wsConnect(wsRequest, GATEWAY_PORT);
+    } catch (err) {
+      if (isGatewayCrashedError(err)) {
+        console.log('[WS] Gateway crashed, attempting restart and retry...');
+        await killGateway(sandbox);
+        await ensureGateway(sandbox, c.env);
+        try {
+          containerResponse = await sandbox.wsConnect(wsRequest, GATEWAY_PORT);
+        } catch (retryErr) {
+          console.error('[WS] Retry after restart also failed:', retryErr);
+          return new Response('Gateway crashed and recovery failed', { status: 503 });
+        }
+      } else {
+        console.error('[WS] WebSocket proxy error:', err);
+        return new Response('WebSocket proxy error', { status: 502 });
+      }
+    }
     console.log('[WS] wsConnect response status:', containerResponse.status);
 
     // Get the container-side WebSocket
@@ -447,7 +495,29 @@ app.all('*', async (c) => {
   }
 
   console.log('[HTTP] Proxying:', url.pathname + url.search);
-  const httpResponse = await sandbox.containerFetch(request, GATEWAY_PORT);
+
+  let httpResponse: Response;
+  try {
+    httpResponse = await sandbox.containerFetch(request, GATEWAY_PORT);
+  } catch (err) {
+    if (isGatewayCrashedError(err)) {
+      console.log('[HTTP] Gateway crashed, attempting restart and retry...');
+      await killGateway(sandbox);
+      await ensureGateway(sandbox, c.env);
+      try {
+        httpResponse = await sandbox.containerFetch(request, GATEWAY_PORT);
+      } catch (retryErr) {
+        console.error('[HTTP] Retry after restart also failed:', retryErr);
+        return c.json({ error: 'Gateway crashed and recovery failed' }, 503);
+      }
+    } else {
+      console.error('[HTTP] Proxy error:', err);
+      return c.json(
+        { error: 'Proxy error', message: err instanceof Error ? err.message : String(err) },
+        502,
+      );
+    }
+  }
   console.log('[HTTP] Response status:', httpResponse.status);
 
   // Add debug header to verify worker handled the request
