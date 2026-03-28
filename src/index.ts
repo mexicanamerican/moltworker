@@ -566,7 +566,7 @@ async function handleScheduled(env: OpenClawEnv): Promise<void> {
   const deltaMinutes = ((earliestRun - nowMs) / 60_000).toFixed(1);
   console.log(`[CRON] Cron job due in ${deltaMinutes}m, waking container`);
 
-  const sandbox = getSandbox(env.Sandbox, 'moltbot', buildSandboxOptions(env));
+  const sandbox = getSandbox(env.Sandbox, 'openclaw', buildSandboxOptions(env));
   await ensureGateway(sandbox, env);
   console.log('[CRON] Container woken successfully');
 }
